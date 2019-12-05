@@ -162,6 +162,7 @@ APP_MODS_SRC_C = $(addprefix mods/,\
 	machtouch.c \
 	modcoap.c \
 	modmdns.c \
+	modhttp.c \
 	)
 
 APP_MODS_LORA_SRC_C = $(addprefix mods/,\
