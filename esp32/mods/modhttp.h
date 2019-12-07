@@ -10,6 +10,6 @@
 #ifndef ESP32_MODS_MODHTTP_H_
 #define ESP32_MODS_MODHTTP_H_
 
-extern const mp_obj_module_t mod_http;
+extern const mp_obj_module_t mod_http_server;
 
 #endif /* ESP32_MODS_MODHTTP_H_ */
