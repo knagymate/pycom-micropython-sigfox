@@ -56,6 +56,7 @@ STATIC mod_http_resource_obj_t* find_resource(const char* uri);
 STATIC mod_http_resource_obj_t* add_resource(const char* uri, mp_obj_t value);
 STATIC void remove_resource(const char* uri);
 STATIC void resource_update_value(mod_http_resource_obj_t* resource, mp_obj_t new_value);
+STATIC esp_err_t mod_http_resource_callback_helper(mod_http_resource_obj_t* resource , httpd_method_t method, mp_obj_t callback, bool action);
 
 STATIC void mod_http_server_callback_handler(void *arg_in);
 STATIC esp_err_t mod_http_server_callback(httpd_req_t *r);
@@ -205,6 +206,61 @@ STATIC void resource_update_value(mod_http_resource_obj_t* resource, mp_obj_t ne
     }
 }
 
+STATIC esp_err_t mod_http_resource_callback_helper(mod_http_resource_obj_t* resource , httpd_method_t method, mp_obj_t callback, bool action){
+
+    esp_err_t ret = ESP_OK;
+
+    if(action == true) {
+
+        httpd_uri_t uri;
+        // Set the URI
+        uri.uri = resource->uri;
+        // Save the user's callback into user context field for future usage
+        uri.user_ctx = callback;
+        // The registered handler is our own handler which will handle different requests and call user's callback, if any
+        uri.handler = mod_http_server_callback;
+
+        if((method & MOD_HTTP_GET) && (ret == ESP_OK)) {
+            uri.method = HTTP_GET;
+            ret = httpd_register_uri_handler(server_obj->server, &uri);
+        }
+
+        if((method & MOD_HTTP_PUT) && (ret == ESP_OK)) {
+            uri.method = HTTP_PUT;
+            ret = httpd_register_uri_handler(server_obj->server, &uri);
+        }
+
+        if((method & MOD_HTTP_POST) && (ret == ESP_OK)) {
+            uri.method = HTTP_POST;
+            ret = httpd_register_uri_handler(server_obj->server, &uri);
+        }
+
+        if((method & MOD_HTTP_DELETE) && (ret == ESP_OK)) {
+            uri.method = HTTP_DELETE;
+            ret = httpd_register_uri_handler(server_obj->server, &uri);
+        }
+    }
+    else {
+
+        if((method & MOD_HTTP_GET) && (ret == ESP_OK)) {
+            ret = httpd_unregister_uri_handler(server_obj->server, resource->uri, HTTP_GET);
+        }
+
+        if((method & MOD_HTTP_PUT) && (ret == ESP_OK)) {
+            ret = httpd_unregister_uri_handler(server_obj->server, resource->uri, HTTP_PUT);
+        }
+
+        if((method & MOD_HTTP_POST) && (ret == ESP_OK)) {
+            ret = httpd_unregister_uri_handler(server_obj->server, resource->uri, HTTP_POST);
+        }
+
+        if((method & MOD_HTTP_DELETE) && (ret == ESP_OK)) {
+            ret = httpd_unregister_uri_handler(server_obj->server, resource->uri, HTTP_DELETE);
+        }
+    }
+
+    return ret;
+}
 
 STATIC void mod_http_server_callback_handler(void *arg_in) {
 
@@ -323,7 +379,6 @@ STATIC mp_obj_t mod_http_resource_value(mp_uint_t n_args, const mp_obj_t *args) 
     mod_http_resource_obj_t* self = (mod_http_resource_obj_t*)args[0];
     mp_obj_t ret = mp_const_none;
 
-   // xSemaphoreTake(coap_obj_ptr->semphr, portMAX_DELAY);
     // If the value exists, e.g.: not deleted from another task before we got the semaphore
     if(self->value != NULL) {
         if (n_args == 1) {
@@ -334,15 +389,51 @@ STATIC mp_obj_t mod_http_resource_value(mp_uint_t n_args, const mp_obj_t *args) 
             resource_update_value(self, (mp_obj_t)args[1]);
         }
     }
-   // xSemaphoreGive(coap_obj_ptr->semphr);
-
     return ret;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_http_resource_value_obj, 1, 2, mod_http_resource_value);
 
+// Sets or removes the callback on a given method
+STATIC mp_obj_t mod_http_resource_callback(mp_uint_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+
+    const mp_arg_t mod_http_resource_callback_args[] = {
+            { MP_QSTR_self,                    MP_ARG_OBJ  | MP_ARG_REQUIRED, },
+            { MP_QSTR_method,                  MP_ARG_INT  | MP_ARG_REQUIRED, },
+            { MP_QSTR_callback,                MP_ARG_OBJ  | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NULL}},
+            { MP_QSTR_action,                  MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = true}},
+    };
+
+    mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_resource_callback_args)];
+    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_resource_callback_args, args);
+
+    // Get the resource
+    mod_http_resource_obj_t* self = (mod_http_resource_obj_t*)args[0].u_obj;
+    // Get the method
+    httpd_method_t method = args[1].u_int;
+    // Get the callback
+    mp_obj_t callback = args[2].u_obj;
+    // Get the action
+    bool action = args[3].u_bool;
+
+    if(action == true && callback == MP_OBJ_NULL) {
+        nlr_raise(mp_obj_new_exception_msg(&mp_type_ValueError, "If the \"action\" is TRUE then \"callback\" must be defined"));
+    }
+
+    esp_err_t  ret = mod_http_resource_callback_helper(self, method, callback, action);
+
+    if(ret != ESP_OK) {
+        nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_RuntimeError, "Callback of the resource could not be updated, error code: %d!", ret));
+    }
+
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_resource_callback_obj, 2, mod_http_resource_callback);
+
 STATIC const mp_map_elem_t http_resource_locals_table[] = {
     // instance methods
         { MP_OBJ_NEW_QSTR(MP_QSTR_value),                       (mp_obj_t)&mod_http_resource_value_obj },
+        { MP_OBJ_NEW_QSTR(MP_QSTR_callback),                    (mp_obj_t)&mod_http_resource_callback_obj },
+
 };
 STATIC MP_DEFINE_CONST_DICT(http_resource_locals, http_resource_locals_table);
 
@@ -403,9 +494,7 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
 
     const mp_arg_t mod_http_server_add_resource_args[] = {
             { MP_QSTR_uri,                     MP_ARG_OBJ  | MP_ARG_REQUIRED, },
-            { MP_QSTR_method,                  MP_ARG_INT  | MP_ARG_REQUIRED, },
             { MP_QSTR_value,                   MP_ARG_OBJ  | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NULL}},
-            { MP_QSTR_method,                  MP_ARG_OBJ  | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NULL}},
     };
 
     if(server_initialized == true) {
@@ -413,6 +502,8 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
         mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_server_add_resource_args)];
         mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_server_add_resource_args, args);
 
+        mod_http_resource_obj_t* resource = MP_OBJ_NULL;
+        esp_err_t ret = ESP_OK;
         httpd_uri_t uri;
 
         // Get the URI
@@ -422,41 +513,23 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
             nlr_raise(mp_obj_new_exception_msg(&mp_type_RuntimeError, "Resource already added!"));
         }
 
-        // Get the user's callback
-        uri.user_ctx = args[3].u_obj;
-        // The registered handler is our own handler which will handle different requests and call user's callback, if any
-        uri.handler = mod_http_server_callback;
+        // Create the resource in the esp-idf http server's context
+        ret = httpd_register_uri_handler(server_obj->server, &uri);
 
-        uint8_t method = args[1].u_int;
-
-        esp_err_t ret = ESP_OK;
-
-        if(method & MOD_HTTP_GET) {
-            uri.method = HTTP_GET;
-            ret = httpd_register_uri_handler(server_obj->server, &uri);
-        }
-
-        if(method & MOD_HTTP_PUT) {
-            uri.method = HTTP_PUT;
-            ret = httpd_register_uri_handler(server_obj->server, &uri);
-        }
-
-        if(method & MOD_HTTP_POST) {
-            uri.method = HTTP_POST;
-            ret = httpd_register_uri_handler(server_obj->server, &uri);
-        }
-
-        if(method & MOD_HTTP_DELETE) {
-            uri.method = HTTP_DELETE;
-            ret = httpd_register_uri_handler(server_obj->server, &uri);
+        if(ret == ESP_OK) {
+            // Add resource to MicroPython http server's context with default value
+            resource = add_resource(uri.uri, args[1].u_obj);
         }
 
         if(ret != ESP_OK) {
+            // Error occurred, remove the registered resource from MicroPython http server's context
+            remove_resource(uri.uri);
+            // Error occurred, remove the registered resource from esp-idf http server's context
+            (void)httpd_unregister_uri(server_obj->server, uri.uri);
             nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_RuntimeError, "Resource could not be added, error code: %d!", ret));
         }
 
-        // Add resource to HTTP MicroPython module's scope with default value
-        return add_resource(uri.uri, args[2].u_obj);
+        return resource;
     }
     else {
         nlr_raise(mp_obj_new_exception_msg(&mp_type_RuntimeError, "HTTP Server module is not initialized!"));
@@ -464,7 +537,7 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
         return mp_const_none;
     }
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_server_add_resource_obj, 2, mod_http_server_add_resource);
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_server_add_resource_obj, 1, mod_http_server_add_resource);
 
 // Removes a resource from the http server module
 STATIC mp_obj_t mod_http_server_remove_resource(mp_obj_t uri_in) {
