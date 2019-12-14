@@ -31,6 +31,17 @@
 #define MOD_HTTP_POST       (4)
 #define MOD_HTTP_DELETE     (8)
 
+#define MOD_HTTP_MEDIA_TYPE_TEXT_XML        "text/xml"
+#define MOD_HTTP_MEDIA_TYPE_TEXT_PLAIN      "text/plain"
+#define MOD_HTTP_MEDIA_TYPE_APP_XML         "application/xml"
+
+
+#define MOD_HTTP_MEDIA_TYPE_TEXT_HTML_ID    (0)
+#define MOD_HTTP_MEDIA_TYPE_TEXT_XML_ID     (1)
+#define MOD_HTTP_MEDIA_TYPE_TEXT_PLAIN_ID   (2)
+#define MOD_HTTP_MEDIA_TYPE_APP_JSON_ID     (3)
+#define MOD_HTTP_MEDIA_TYPE_APP_OCTET_ID    (4)
+#define MOD_HTTP_MEDIA_TYPE_APP_XML_ID      (5)
 
 
 /******************************************************************************
@@ -39,9 +50,10 @@
 typedef struct mod_http_resource_obj_s {
     mp_obj_base_t base;
     struct mod_http_resource_obj_s* next;
+    const char* uri;
     uint8_t* value;
     uint16_t value_len;
-    const char* uri;
+    uint8_t mediatype;
 }mod_http_resource_obj_t;
 
 typedef struct mod_http_server_obj_s {
@@ -53,10 +65,11 @@ typedef struct mod_http_server_obj_s {
  DECLARE PRIVATE FUNCTIONS
  ******************************************************************************/
 STATIC mod_http_resource_obj_t* find_resource(const char* uri);
-STATIC mod_http_resource_obj_t* add_resource(const char* uri, mp_obj_t value);
+STATIC mod_http_resource_obj_t* add_resource(const char* uri, mp_obj_t value, mp_int_t mediatype);
 STATIC void remove_resource(const char* uri);
 STATIC void resource_update_value(mod_http_resource_obj_t* resource, mp_obj_t new_value);
 STATIC esp_err_t mod_http_resource_callback_helper(mod_http_resource_obj_t* resource , httpd_method_t method, mp_obj_t callback, bool action);
+STATIC int mod_http_server_get_mediatype_id(const char* mediatype);
 
 STATIC void mod_http_server_callback_handler(void *arg_in);
 STATIC esp_err_t mod_http_server_callback(httpd_req_t *r);
@@ -64,6 +77,15 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r);
 /******************************************************************************
  DEFINE PRIVATE VARIABLES
  ******************************************************************************/
+
+STATIC const char* mod_http_mediatype[] = {
+        HTTPD_TYPE_TEXT,
+        MOD_HTTP_MEDIA_TYPE_TEXT_XML,
+        MOD_HTTP_MEDIA_TYPE_TEXT_PLAIN,
+        HTTPD_TYPE_JSON,
+        HTTPD_TYPE_OCTET,
+        MOD_HTTP_MEDIA_TYPE_APP_XML
+};
 
 // There can only be 1 server instance
 STATIC mod_http_server_obj_t* server_obj = NULL;
@@ -92,7 +114,7 @@ STATIC mod_http_resource_obj_t* find_resource(const char* uri) {
 }
 
 // Create a new resource in the scope of the only context
-STATIC mod_http_resource_obj_t* add_resource(const char* uri, mp_obj_t value) {
+STATIC mod_http_resource_obj_t* add_resource(const char* uri, mp_obj_t value, mp_int_t mediatype) {
 
     // Resource does not exist, create a new resource object
     mod_http_resource_obj_t* resource = m_new_obj(mod_http_resource_obj_t);
@@ -125,6 +147,8 @@ STATIC mod_http_resource_obj_t* add_resource(const char* uri, mp_obj_t value) {
         // Append the new resource to the end of the list
         current->next = resource;
     }
+
+    resource->mediatype = mediatype;
 
     return resource;
 }
@@ -206,15 +230,22 @@ STATIC void resource_update_value(mod_http_resource_obj_t* resource, mp_obj_t ne
     }
 }
 
+
 STATIC esp_err_t mod_http_resource_callback_helper(mod_http_resource_obj_t* resource , httpd_method_t method, mp_obj_t callback, bool action){
 
     esp_err_t ret = ESP_OK;
 
     if(action == true) {
 
-        httpd_uri_t uri;
+        /* This needs to be static otherwise, most probably due to compiler optimizations, the
+         * value of it is not updated between to subsequent calls and httpd_register_uri_handler()
+         * fails with error ESP_ERR_HTTPD_HANDLER_EXISTS because it gets the URI of the previous resource
+         */
+        STATIC httpd_uri_t uri;
+
         // Set the URI
         uri.uri = resource->uri;
+
         // Save the user's callback into user context field for future usage
         uri.user_ctx = callback;
         // The registered handler is our own handler which will handle different requests and call user's callback, if any
@@ -262,6 +293,20 @@ STATIC esp_err_t mod_http_resource_callback_helper(mod_http_resource_obj_t* reso
     return ret;
 }
 
+STATIC int mod_http_server_get_mediatype_id(const char* mediatype) {
+
+    int id = -1;
+
+    for(int i = 0; i < (sizeof(mod_http_mediatype)/sizeof(mod_http_mediatype[0])); i++) {
+        if(strcmp(mediatype, mod_http_mediatype[i]) == 0) {
+            id = i;
+            break;
+        }
+    }
+
+    return id;
+}
+
 STATIC void mod_http_server_callback_handler(void *arg_in) {
 
     /* The received arg_in is a tuple with 4 elements
@@ -287,14 +332,14 @@ STATIC void mod_http_server_callback_handler(void *arg_in) {
 STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
 
     char* content = NULL;
+    bool error = false;
     mp_obj_t args[4];
-
     mod_http_resource_obj_t* resource = find_resource(r->uri);
 
     // If the resource does not exist anymore then send back 404
     if(resource == NULL){
         httpd_resp_send_404(r);
-        // This can happen is locally the resource has been removed but for some reason it still exists in the HTTP Server library context...
+        // This can happen if locally the resource has been removed but for some reason it still exists in the HTTP Server library context...
         return ESP_FAIL;
     }
 
@@ -308,22 +353,22 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
 
             // If return value less than 0, error occurred
             if(recv_length < 0) {
-                // Free up local content, no longer needed
-                m_free(content);
 
                 // Check if timeout error occurred and send back appropriate response
                 if (recv_length == HTTPD_SOCK_ERR_TIMEOUT) {
                     httpd_resp_send_408(r);
                 }
 
-                //TODO: ESP_FAIL should be returned as per HTTP LIB, check if exception is needed
-                return ESP_FAIL;
-                //nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_RuntimeError, "HTTP Server could not be initialized, error code: %d", recv_length));
+                //TODO: check if exception is needed
+                error = true;
             }
+            else if(recv_length != r->content_len) {
 
-            if(recv_length != r->content_len) {
                 //TODO: Handle this case properly
                 printf("recv_length != r->content_len !!\n");
+
+                //TODO: check if exception is needed
+                error = true;
             }
         }
         else {
@@ -333,39 +378,89 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
         }
     }
 
-    // This is a GET request, send back the current value of the resource
-    if(r->method == HTTP_GET) {
+    if(error == false) {
 
-        //TODO: handle the representation format
-        httpd_resp_send(r, (const char*)resource->value, (ssize_t)resource->value_len);
-    }
-    // This is a POST request
-    else if(r->method == HTTP_POST) {
-        // Update the resource if new value is provided
-        if(content != NULL) {
-            // Update the resource
-            resource_update_value(resource, mp_obj_new_str(content, r->content_len));
-            //TODO: compose here a better message
-            const char resp[] = "Resource is updated.";
-            httpd_resp_send(r, resp, strlen(resp));
+        // This is a GET request, send back the current value of the resource
+        if(r->method == HTTP_GET) {
+            // Check if "Accept" field is defined
+            size_t length = httpd_req_get_hdr_value_len(r, "Accept");
+            if(length > 0) {
+                // length+1 is needed because with length the ESP_ERR_HTTPD_RESULT_TRUNC is dropped
+                char* buf = m_malloc(length+1);
+                esp_err_t ret = httpd_req_get_hdr_value_str(r, "Accept", buf, length+1);
+                if(ret == ESP_OK) {
+                    int mediatype_id = mod_http_server_get_mediatype_id(buf);
+                    if(mediatype_id == -1) {
+                        httpd_resp_send_err(r, 415, "Unknown Media Type");
+                        error = true;
+                    }
+                    else if(mediatype_id != resource->mediatype) {
+                        httpd_resp_send_err(r, 415, "Unsupported Media Type");
+                        error = true;
+                    }
+                }
+                m_free(buf);
+            }
+            else {
+                printf("Accept is NOT defined\n");
+            }
+
+            // Set the media type
+            httpd_resp_set_type(r, mod_http_mediatype[resource->mediatype]);
+            httpd_resp_send(r, (const char*)resource->value, (ssize_t)resource->value_len);
         }
-    }
+        // This is a POST request
+        else if(r->method == HTTP_POST) {
 
-    // If there is a registered MP callback for this resource the parameters need to be prepared
-    if(r->user_ctx != MP_OBJ_NULL) {
-        // The MicroPython callback is stored in user_ctx
-        args[0] = r->user_ctx;
-        args[1] = mp_obj_new_str(r->uri, strlen(r->uri));
-        args[2] = mp_obj_new_int(r->method);
-        args[3] = mp_obj_new_str(content, r->content_len);
+            // Check if "Content-Type" field is defined
+            size_t length = httpd_req_get_hdr_value_len(r, "Content-Type");
+            if(length > 0) {
+                // length+1 is needed because with length the ESP_ERR_HTTPD_RESULT_TRUNC is dropped
+                char* buf = m_malloc(length+1);
+                esp_err_t ret = httpd_req_get_hdr_value_str(r, "Content-Type", buf, length+1);
+                if(ret == ESP_OK) {
+                    int mediatype_id = mod_http_server_get_mediatype_id(buf);
+                    if(mediatype_id != -1) {
+                        // Update the mediatype of the resource
+                        resource->mediatype = (uint8_t)mediatype_id;
+                    }
+                    else {
+                        httpd_resp_send_err(r, 415, "Unsupported Media Type");
+                        error = true;
+                    }
+                }
+                else {
+                    error = true;
+                }
 
-        // The user registered MicroPython callback will be called decoupled from the HTTP Server context in the IRQ Task
-        mp_irq_queue_interrupt(mod_http_server_callback_handler, (void *)mp_obj_new_tuple(4, args));
+                m_free(buf);
+            }
+
+            // Update the resource if new value is provided
+            if(error == false && content != NULL) {
+                // Update the resource
+                resource_update_value(resource, mp_obj_new_str(content, r->content_len));
+                //TODO: compose here a better message
+                const char resp[] = "Resource is updated.";
+                httpd_resp_send(r, resp, strlen(resp));
+            }
+        }
+
+        // If there is a registered MP callback for this resource the parameters need to be prepared
+        if(error == false && r->user_ctx != MP_OBJ_NULL) {
+            // The MicroPython callback is stored in user_ctx
+            args[0] = r->user_ctx;
+            args[1] = mp_obj_new_str(r->uri, strlen(r->uri));
+            args[2] = mp_obj_new_int(r->method);
+            args[3] = mp_obj_new_str(content, r->content_len);
+
+            // The user registered MicroPython callback will be called decoupled from the HTTP Server context in the IRQ Task
+            mp_irq_queue_interrupt(mod_http_server_callback_handler, (void *)mp_obj_new_tuple(4, args));
+        }
     }
 
     // Free up local content, no longer needed
     m_free(content);
-
     return ESP_OK;
 }
 
@@ -495,6 +590,8 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
     const mp_arg_t mod_http_server_add_resource_args[] = {
             { MP_QSTR_uri,                     MP_ARG_OBJ  | MP_ARG_REQUIRED, },
             { MP_QSTR_value,                   MP_ARG_OBJ  | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NULL}},
+            { MP_QSTR_media_type,              MP_ARG_INT  | MP_ARG_KW_ONLY, {.u_int = MOD_HTTP_MEDIA_TYPE_TEXT_HTML_ID}},
+
     };
 
     if(server_initialized == true) {
@@ -518,7 +615,7 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
 
         if(ret == ESP_OK) {
             // Add resource to MicroPython http server's context with default value
-            resource = add_resource(uri.uri, args[1].u_obj);
+            resource = add_resource(uri.uri, args[1].u_obj, args[2].u_int);
         }
 
         if(ret != ESP_OK) {
@@ -577,6 +674,14 @@ STATIC const mp_map_elem_t mod_http_server_globals_table[] = {
         { MP_OBJ_NEW_QSTR(MP_QSTR_PUT),                      MP_OBJ_NEW_SMALL_INT(MOD_HTTP_PUT) },
         { MP_OBJ_NEW_QSTR(MP_QSTR_POST),                     MP_OBJ_NEW_SMALL_INT(MOD_HTTP_POST) },
         { MP_OBJ_NEW_QSTR(MP_QSTR_DELETE),                   MP_OBJ_NEW_SMALL_INT(MOD_HTTP_DELETE) },
+        { MP_OBJ_NEW_QSTR(MP_QSTR_TEXT),                     MP_OBJ_NEW_SMALL_INT(MOD_HTTP_MEDIA_TYPE_TEXT_HTML_ID) },
+        { MP_OBJ_NEW_QSTR(MP_QSTR_XML),                      MP_OBJ_NEW_SMALL_INT(MOD_HTTP_MEDIA_TYPE_TEXT_XML_ID) },
+        { MP_OBJ_NEW_QSTR(MP_QSTR_PLAIN),                    MP_OBJ_NEW_SMALL_INT(MOD_HTTP_MEDIA_TYPE_TEXT_PLAIN_ID) },
+        { MP_OBJ_NEW_QSTR(MP_QSTR_JSON),                     MP_OBJ_NEW_SMALL_INT(MOD_HTTP_MEDIA_TYPE_APP_JSON_ID) },
+        { MP_OBJ_NEW_QSTR(MP_QSTR_OCTET),                    MP_OBJ_NEW_SMALL_INT(MOD_HTTP_MEDIA_TYPE_APP_OCTET_ID) },
+        { MP_OBJ_NEW_QSTR(MP_QSTR_APP_XML),                  MP_OBJ_NEW_SMALL_INT(MOD_HTTP_MEDIA_TYPE_APP_XML_ID) },
+
+
 
 
 };
