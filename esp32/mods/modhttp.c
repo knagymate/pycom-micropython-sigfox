@@ -21,6 +21,10 @@
 
 #include "modhttp.h"
 
+//
+#include <stdio.h>
+//
+
 
 /******************************************************************************
  DEFINE CONSTANTS
@@ -51,6 +55,7 @@ typedef struct mod_http_resource_obj_s {
     mp_obj_base_t base;
     struct mod_http_resource_obj_s* next;
     const char* uri;
+    char* response;
     uint8_t* value;
     uint16_t value_len;
     uint8_t mediatype;
@@ -89,7 +94,7 @@ STATIC const char* mod_http_mediatype[] = {
 
 // There can only be 1 server instance
 STATIC mod_http_server_obj_t* server_obj = NULL;
-STATIC bool server_initialized = false;
+STATIC bool server_started = false;
 
 STATIC const mp_obj_type_t mod_http_resource_type;
 
@@ -330,7 +335,6 @@ STATIC void mod_http_server_callback_handler(void *arg_in) {
 }
 
 STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
-
     char* content = NULL;
     bool error = false;
     mp_obj_t args[4];
@@ -379,7 +383,6 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
     }
 
     if(error == false) {
-
         // This is a GET request, send back the current value of the resource
         if(r->method == HTTP_GET) {
             // Check if "Accept" field is defined
@@ -388,7 +391,7 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
                 // length+1 is needed because with length the ESP_ERR_HTTPD_RESULT_TRUNC is dropped
                 char* buf = m_malloc(length+1);
                 esp_err_t ret = httpd_req_get_hdr_value_str(r, "Accept", buf, length+1);
-                if(ret == ESP_OK) {
+                /*if(ret == ESP_OK) {
                     int mediatype_id = mod_http_server_get_mediatype_id(buf);
                     if(mediatype_id == -1) {
                         httpd_resp_send_err(r, 415, "Unknown Media Type");
@@ -398,7 +401,8 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
                         httpd_resp_send_err(r, 415, "Unsupported Media Type");
                         error = true;
                     }
-                }
+
+                }*/
                 m_free(buf);
             }
             else {
@@ -407,11 +411,16 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
 
             // Set the media type
             httpd_resp_set_type(r, mod_http_mediatype[resource->mediatype]);
-            httpd_resp_send(r, (const char*)resource->value, (ssize_t)resource->value_len);
+            //httpd_resp_send(r, (const char*)resource->value, (ssize_t)resource->value_len);
+
+            // In case of sending empty response, device crash
+            if(strlen(resource->response) > 0) {
+            	// Send user-defined response
+            	httpd_resp_send(r, resource->response, strlen(resource->response));
+            }
         }
         // This is a POST request
         else if(r->method == HTTP_POST) {
-
             // Check if "Content-Type" field is defined
             size_t length = httpd_req_get_hdr_value_len(r, "Content-Type");
             if(length > 0) {
@@ -524,10 +533,64 @@ STATIC mp_obj_t mod_http_resource_callback(mp_uint_t n_args, const mp_obj_t *pos
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_resource_callback_obj, 2, mod_http_resource_callback);
 
+STATIC mp_obj_t mod_http_resource_set_response(mp_uint_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+
+	const mp_arg_t mod_http_resource_callback_args[] = {
+			{ MP_QSTR_self,                    MP_ARG_OBJ  | MP_ARG_REQUIRED, },
+			{ MP_QSTR_response,                MP_ARG_OBJ  | MP_ARG_REQUIRED, },
+	};
+
+	mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_resource_callback_args)];
+	mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_resource_callback_args, args);
+
+	// Get the resource
+	mod_http_resource_obj_t* resource = (mod_http_resource_obj_t*)args[0].u_obj;
+
+	// Get the response
+	resource->response = calloc(strlen(mp_obj_str_get_str(args[1].u_obj)), sizeof(char*));
+	memcpy(resource->response, mp_obj_str_get_str(args[1].u_obj), strlen(mp_obj_str_get_str(args[1].u_obj)));
+
+	return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_resource_set_response_obj, 2, mod_http_resource_set_response);
+
+STATIC mp_obj_t mod_http_resource_add_response(mp_uint_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+
+	const mp_arg_t mod_http_resource_callback_args[] = {
+			{ MP_QSTR_self,                    MP_ARG_OBJ  | MP_ARG_REQUIRED, },
+			{ MP_QSTR_response,                MP_ARG_OBJ  | MP_ARG_REQUIRED, },
+	};
+
+	mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_resource_callback_args)];
+	mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_resource_callback_args, args);
+
+	// Get the resource
+	mod_http_resource_obj_t* resource = (mod_http_resource_obj_t*)args[0].u_obj;
+
+	// Save current response as temp
+	char* response_temp = resource->response;
+
+	// Allocate memory for temp and new response
+	resource->response = calloc(strlen(response_temp) + strlen(mp_obj_str_get_str(args[1].u_obj)), sizeof(char*));
+
+	// Copy temp response
+	memcpy(resource->response, response_temp, strlen(response_temp));
+	// Copy new response
+	memcpy(resource->response + strlen(response_temp), mp_obj_str_get_str(args[1].u_obj), strlen(mp_obj_str_get_str(args[1].u_obj)));
+
+	m_free(response_temp);
+	return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_resource_add_response_obj, 2, mod_http_resource_add_response);
+
 STATIC const mp_map_elem_t http_resource_locals_table[] = {
     // instance methods
         { MP_OBJ_NEW_QSTR(MP_QSTR_value),                       (mp_obj_t)&mod_http_resource_value_obj },
         { MP_OBJ_NEW_QSTR(MP_QSTR_callback),                    (mp_obj_t)&mod_http_resource_callback_obj },
+		{ MP_OBJ_NEW_QSTR(MP_QSTR_set_response),                (mp_obj_t)&mod_http_resource_set_response_obj },
+		{ MP_OBJ_NEW_QSTR(MP_QSTR_add_response),                (mp_obj_t)&mod_http_resource_add_response_obj },
 
 };
 STATIC MP_DEFINE_CONST_DICT(http_resource_locals, http_resource_locals_table);
@@ -550,7 +613,7 @@ STATIC mp_obj_t mod_http_server_init(mp_uint_t n_args, const mp_obj_t *pos_args,
             { MP_QSTR_port,                     MP_ARG_INT  | MP_ARG_KW_ONLY, {.u_obj = mp_const_none}}
     };
 
-    if(server_initialized == false) {
+    if(server_started == false) {
 
         MP_STATE_PORT(http_server_ptr) = m_malloc(sizeof(mod_http_server_obj_t));
         server_obj = MP_STATE_PORT(http_server_ptr);
@@ -573,7 +636,7 @@ STATIC mp_obj_t mod_http_server_init(mp_uint_t n_args, const mp_obj_t *pos_args,
 
         server_obj->resources = NULL;
 
-        server_initialized = true;
+        server_started = true;
     }
     else {
         nlr_raise(mp_obj_new_exception_msg(&mp_type_RuntimeError, "HTTP Server module is already initialized!"));
@@ -581,8 +644,25 @@ STATIC mp_obj_t mod_http_server_init(mp_uint_t n_args, const mp_obj_t *pos_args,
 
     return mp_const_none;
 }
-
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_server_init_obj, 0, mod_http_server_init);
+
+// Stop the http server module
+STATIC mp_obj_t mod_http_server_stop(void) {
+
+    if(server_started == false) {
+    	nlr_raise(mp_obj_new_exception_msg(&mp_type_RuntimeError, "HTTP Server module is not started yet!"));
+    }
+
+    esp_err_t ret = httpd_stop(server_obj->server);
+    if(ret != ESP_OK) {
+    	nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_RuntimeError, "HTTP Server could not be stopped, error code: %d", ret));
+    }
+
+    server_started = false;
+
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mod_http_server_stop_obj, mod_http_server_stop);
 
 // Adds a resource to the http server module
 STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -590,11 +670,12 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
     const mp_arg_t mod_http_server_add_resource_args[] = {
             { MP_QSTR_uri,                     MP_ARG_OBJ  | MP_ARG_REQUIRED, },
             { MP_QSTR_value,                   MP_ARG_OBJ  | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NULL}},
+			{ MP_QSTR_response,                MP_ARG_OBJ  | MP_ARG_KW_ONLY, {.u_obj = MP_OBJ_NULL}},
             { MP_QSTR_media_type,              MP_ARG_INT  | MP_ARG_KW_ONLY, {.u_int = MOD_HTTP_MEDIA_TYPE_TEXT_HTML_ID}},
 
     };
 
-    if(server_initialized == true) {
+    if(server_started == true) {
 
         mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_server_add_resource_args)];
         mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_server_add_resource_args, args);
@@ -615,7 +696,7 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
 
         if(ret == ESP_OK) {
             // Add resource to MicroPython http server's context with default value
-            resource = add_resource(uri.uri, args[1].u_obj, args[2].u_int);
+            resource = add_resource(uri.uri, args[1].u_obj, args[3].u_int);
         }
 
         if(ret != ESP_OK) {
@@ -625,6 +706,14 @@ STATIC mp_obj_t mod_http_server_add_resource(mp_uint_t n_args, const mp_obj_t *p
             (void)httpd_unregister_uri(server_obj->server, uri.uri);
             nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_RuntimeError, "Resource could not be added, error code: %d!", ret));
         }
+
+        // Get the response
+        if(args[2].u_obj != MP_OBJ_NULL) {
+        	resource->response = calloc(strlen(mp_obj_str_get_str(args[2].u_obj)), sizeof(char*));
+        	memcpy(resource->response, mp_obj_str_get_str(args[2].u_obj), strlen(mp_obj_str_get_str(args[2].u_obj)));
+        } //else {
+        //	resource->response = "";
+        //}
 
         return resource;
     }
@@ -639,7 +728,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_server_add_resource_obj, 1, mod_http_
 // Removes a resource from the http server module
 STATIC mp_obj_t mod_http_server_remove_resource(mp_obj_t uri_in) {
 
-    if(server_initialized == true) {
+    if(server_started == true) {
 
         const char* uri = mp_obj_str_get_str(uri_in);
 
@@ -666,6 +755,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(mod_http_server_remove_resource_obj, mod_http_s
 STATIC const mp_map_elem_t mod_http_server_globals_table[] = {
         { MP_OBJ_NEW_QSTR(MP_QSTR___name__),                        MP_OBJ_NEW_QSTR(MP_QSTR_HTTP_Server) },
         { MP_OBJ_NEW_QSTR(MP_QSTR_init),                            (mp_obj_t)&mod_http_server_init_obj },
+		{ MP_OBJ_NEW_QSTR(MP_QSTR_stop),                            (mp_obj_t)&mod_http_server_stop_obj },
         { MP_OBJ_NEW_QSTR(MP_QSTR_add_resource),                    (mp_obj_t)&mod_http_server_add_resource_obj },
         { MP_OBJ_NEW_QSTR(MP_QSTR_remove_resource),                 (mp_obj_t)&mod_http_server_remove_resource_obj },
 
