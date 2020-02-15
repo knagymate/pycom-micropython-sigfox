@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Pycom Limited.
+ * Copyright (c) 2020, Pycom Limited.
  *
  * This software is licensed under the GNU GPL version 3 or any
  * later version, with permitted additional terms. For more information
@@ -58,7 +58,7 @@ TaskHandle_t svTaskHandle;
 TaskHandle_t SmartConfTaskHandle;
 #if defined(LOPY) || defined (LOPY4) || defined (FIPY)
 TaskHandle_t xLoRaTaskHndl;
-TaskHandle_t xLoRaTimerTaskHndl;
+DRAM_ATTR TaskHandle_t xLoRaTimerTaskHndl;
 #endif
 #if defined(SIPY) || defined (LOPY4) || defined (FIPY)
 TaskHandle_t xSigfoxTaskHndl;

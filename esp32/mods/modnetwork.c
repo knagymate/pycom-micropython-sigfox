@@ -1,7 +1,7 @@
 /*
  * This file is derived from the MicroPython project, http://micropython.org/
  *
- * Copyright (c) 2019, Pycom Limited and its licensors.
+ * Copyright (c) 2020, Pycom Limited and its licensors.
  *
  * This software is licensed under the GNU GPL version 3 or any later version,
  * with permitted additional terms. For more information see the Pycom Licence
@@ -48,6 +48,7 @@
 #include "serverstask.h"
 #include "modusocket.h"
 #include "modcoap.h"
+#include "modmdns.h"
 
 #include "lwip/sockets.h"
 
@@ -241,6 +242,7 @@ STATIC const mp_map_elem_t mp_module_network_globals_table[] = {
     { MP_OBJ_NEW_QSTR(MP_QSTR_Bluetooth),           (mp_obj_t)&mod_network_nic_type_bt },
     { MP_OBJ_NEW_QSTR(MP_QSTR_Server),              (mp_obj_t)&network_server_type },
     { MP_OBJ_NEW_QSTR(MP_QSTR_Coap),                (mp_obj_t)&mod_coap },
+    { MP_OBJ_NEW_QSTR(MP_QSTR_MDNS),                (mp_obj_t)&mod_mdns },
 };
 
 STATIC MP_DEFINE_CONST_DICT(mp_module_network_globals, mp_module_network_globals_table);
