@@ -70,6 +70,7 @@ STATIC void remove_resource(const char* uri);
 STATIC void resource_update_value(mod_http_resource_obj_t* resource, mp_obj_t new_value);
 STATIC esp_err_t mod_http_resource_callback_helper(mod_http_resource_obj_t* resource , httpd_method_t method, mp_obj_t callback, bool action);
 STATIC int mod_http_server_get_mediatype_id(const char* mediatype);
+STATIC bool mod_http_server_get_acceptance(const char* accept_field, uint8_t mediatype_id);
 
 STATIC void mod_http_server_callback_handler(void *arg_in);
 STATIC esp_err_t mod_http_server_callback(httpd_req_t *r);
@@ -293,6 +294,35 @@ STATIC esp_err_t mod_http_resource_callback_helper(mod_http_resource_obj_t* reso
     return ret;
 }
 
+// Compares Accept request-header field with resources mediatype
+STATIC bool mod_http_server_get_acceptance(const char* accept_field, uint8_t mediatype_id) {
+
+	// Start with no acceptance
+    bool accept = false;
+
+    // Initiate resource's mediatype long slice
+    char* slice;
+    slice = (char*)malloc(strlen(mod_http_mediatype[mediatype_id])*(sizeof(char)+1));
+
+    // Handle edge case
+	if(strlen(accept_field) >= strlen(mod_http_mediatype[mediatype_id])) {
+		// Go through on accept field buffer with resources mediatype long window
+		for(int i=0; i<=strlen(accept_field)-strlen(mod_http_mediatype[mediatype_id]); i++) {
+			// Reset slice
+			memset(slice,'\0',strlen(mod_http_mediatype[mediatype_id])+1);
+			// Get slice from accept field
+			strncpy(slice, accept_field+i, strlen(mod_http_mediatype[mediatype_id]));
+			// Accept in case of match
+			if(strcmp(mod_http_mediatype[mediatype_id], slice) == 0) {
+				accept = true;
+				break;
+			}
+		}
+	}
+
+    return accept;
+}
+
 STATIC int mod_http_server_get_mediatype_id(const char* mediatype) {
 
     int id = -1;
@@ -389,13 +419,13 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
                 char* buf = m_malloc(length+1);
                 esp_err_t ret = httpd_req_get_hdr_value_str(r, "Accept", buf, length+1);
                 if(ret == ESP_OK) {
-                    int mediatype_id = mod_http_server_get_mediatype_id(buf);
-                    if(mediatype_id == -1) {
-                        httpd_resp_send_err(r, 415, "Unknown Media Type");
-                        error = true;
-                    }
-                    else if(mediatype_id != resource->mediatype) {
-                        httpd_resp_send_err(r, 415, "Unsupported Media Type");
+                	if(!mod_http_server_get_acceptance(buf, resource->mediatype)) {
+                        //406 status code is not defined in esp-idf httpd_resp_send_err()
+                    	char* status = "406 Not Acceptable";
+                        char* msg    = "This request is not acceptable.";
+                    	httpd_resp_set_status(r, status);
+                    	httpd_resp_set_type(r, HTTPD_TYPE_TEXT);
+                    	httpd_resp_send(r, msg, strlen(msg));
                         error = true;
                     }
                 }
@@ -405,9 +435,11 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
                 printf("Accept is NOT defined\n");
             }
 
-            // Set the media type
-            httpd_resp_set_type(r, mod_http_mediatype[resource->mediatype]);
-            httpd_resp_send(r, (const char*)resource->value, (ssize_t)resource->value_len);
+            if(error == false) {
+            	// Set the media type
+            	httpd_resp_set_type(r, mod_http_mediatype[resource->mediatype]);
+            	httpd_resp_send(r, (const char*)resource->value, (ssize_t)resource->value_len);
+            }
         }
         // This is a POST request
         else if(r->method == HTTP_POST) {
