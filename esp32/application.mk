@@ -78,7 +78,9 @@ APP_INC += -I$(ESP_IDF_COMP_PATH)/coap/libcoap/examples
 APP_INC += -I$(ESP_IDF_COMP_PATH)/coap/port/include
 APP_INC += -I$(ESP_IDF_COMP_PATH)/coap/port/include/coap
 APP_INC += -I$(ESP_IDF_COMP_PATH)/mdns/include
+APP_INC += -I$(ESP_IDF_COMP_PATH)/esp_https_server/include
 APP_INC += -I$(ESP_IDF_COMP_PATH)/esp_http_server/include
+APP_INC += -I$(ESP_IDF_COMP_PATH)/openssl/include
 APP_INC += -I$(ESP_IDF_COMP_PATH)/nghttp/port/include
 APP_INC += -I../lib/mp-readline
 APP_INC += -I../lib/netutils
@@ -312,6 +314,10 @@ BOOT_SRC_C = $(addprefix bootloader/,\
 	mperror.c \
 	gpio.c \
 	)
+	
+APP_HTTP_SRC_C = $(addprefix http/,\
+	https_server.c \
+	)
 
 SFX_OBJ =
 
@@ -342,7 +348,7 @@ endif # ifeq ($(OPENTHREAD), on)
 OBJ += $(addprefix $(BUILD)/, $(APP_MAIN_SRC_C:.c=.o) $(APP_HAL_SRC_C:.c=.o) $(APP_LIB_SRC_C:.c=.o))
 OBJ += $(addprefix $(BUILD)/, $(APP_MODS_SRC_C:.c=.o) $(APP_STM_SRC_C:.c=.o))
 OBJ += $(addprefix $(BUILD)/, $(APP_FATFS_SRC_C:.c=.o) $(APP_LITTLEFS_SRC_C:.c=.o) $(APP_UTIL_SRC_C:.c=.o) $(APP_TELNET_SRC_C:.c=.o))
-OBJ += $(addprefix $(BUILD)/, $(APP_FTP_SRC_C:.c=.o) $(APP_CAN_SRC_C:.c=.o))
+OBJ += $(addprefix $(BUILD)/, $(APP_FTP_SRC_C:.c=.o) $(APP_CAN_SRC_C:.c=.o) $(APP_HTTP_SRC_C:.c=.o))
 OBJ += $(BUILD)/pins.o
 
 BOOT_OBJ = $(addprefix $(BUILD)/, $(BOOT_SRC_C:.c=.o))
