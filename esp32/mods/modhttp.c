@@ -17,9 +17,9 @@
 #include "mpirq.h"
 
 #include "esp_err.h"
-#include "esp_http_server.h"
-
+#include "esp_https_server.h"
 #include "modhttp.h"
+#include "pycom_general_util.h"
 
 
 /******************************************************************************
@@ -368,9 +368,9 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
 
     // If the resource does not exist anymore then send back 404
     if(resource == NULL){
-        httpd_resp_send_404(r);
-        // This can happen if locally the resource has been removed but for some reason it still exists in the HTTP Server library context...
-        return ESP_FAIL;
+    	httpd_resp_send_404(r);
+    	// This can happen if locally the resource has been removed but for some reason it still exists in the HTTP Server library context...
+    	return ESP_FAIL;
     }
 
     // Get the content part of the message
@@ -579,7 +579,9 @@ STATIC const mp_obj_type_t mod_http_resource_type = {
 STATIC mp_obj_t mod_http_server_init(mp_uint_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
 
     const mp_arg_t mod_http_server_init_args[] = {
-            { MP_QSTR_port,                     MP_ARG_INT  | MP_ARG_KW_ONLY, {.u_obj = mp_const_none}}
+            { MP_QSTR_port,                     MP_ARG_INT  | MP_ARG_KW_ONLY, {.u_int = 80}},
+			{ MP_QSTR_keyfile,                  MP_ARG_KW_ONLY  | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+			{ MP_QSTR_certfile,                   MP_ARG_KW_ONLY  | MP_ARG_OBJ, {.u_obj = mp_const_none} },
     };
 
     if(server_initialized == false) {
@@ -590,17 +592,57 @@ STATIC mp_obj_t mod_http_server_init(mp_uint_t n_args, const mp_obj_t *pos_args,
         mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_server_init_args)];
         mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_server_init_args, args);
 
-        httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+        httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
 
-        config.task_priority = MP_THREAD_PRIORITY;
-        if(args[0].u_obj != mp_const_none) {
-            config.server_port = args[0].u_int;
+        // HTTPS Server
+        if(args[0].u_int == 443) {
+        	config.transport_mode = HTTPD_SSL_TRANSPORT_SECURE;
+
+			// retrieve the file paths (with an 6 byte offset in order to strip it from the '/flash' prefix)
+			const char *keyfile_path  = (args[1].u_obj == mp_const_none) ? NULL : mp_obj_str_get_str(args[1].u_obj);
+			const char *certfile_path = (args[2].u_obj == mp_const_none) ? NULL : mp_obj_str_get_str(args[2].u_obj);
+
+			// server side requires both certfile and keyfile
+			if (!keyfile_path || !certfile_path) {
+				nlr_raise(mp_obj_new_exception_msg(&mp_type_RuntimeError, "HTTPS Server cannot be initialized without Certification and Key Files"));
+			}
+			else {
+				const char *signed_cert = NULL;
+				const char *prvt_key = NULL;
+
+				// Do not know why these needed in pycom_util_read_file
+				vstr_t vstr_ca = {};
+				vstr_t vstr_key =  {};
+
+				signed_cert = pycom_util_read_file(certfile_path, &vstr_ca);
+				prvt_key = pycom_util_read_file(keyfile_path, &vstr_key);
+
+				config.cacert_pem = (uint8_t *) signed_cert;
+				config.cacert_len = strlen(signed_cert);
+
+				config.prvtkey_pem = (uint8_t *) prvt_key;
+				config.prvtkey_len = strlen(prvt_key);
+
+				if(signed_cert == NULL) {
+					nlr_raise(mp_obj_new_exception_msg(&mp_type_OSError, "CA file not found"));
+				}
+				if(prvt_key == NULL) {
+					nlr_raise(mp_obj_new_exception_msg(&mp_type_OSError, "KEY file not found"));
+				}
+				printf("signed_cert length: %d\n", config.cacert_len);
+				printf("prvt_key length: %d\n", config.prvtkey_len);
+			}
+        }
+        // HTTP SERVER
+        else {
+        	config.transport_mode = HTTPD_SSL_TRANSPORT_INSECURE;
+        	config.port_insecure = args[0].u_int;
         }
 
-        esp_err_t ret = httpd_start(&server_obj->server, &config);
+        esp_err_t ret = httpd_ssl_start(&server_obj->server, &config);
         if(ret != ESP_OK) {
-            m_free(server_obj);
-            nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_RuntimeError, "HTTP Server could not be initialized, error code: %d", ret));
+        	m_free(server_obj);
+        	nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_RuntimeError, "HTTP Server could not be initialized, error code: %d", ret));
         }
 
         server_obj->resources = NULL;
