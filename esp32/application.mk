@@ -80,8 +80,13 @@ APP_INC += -I$(ESP_IDF_COMP_PATH)/coap/port/include/coap
 APP_INC += -I$(ESP_IDF_COMP_PATH)/mdns/include
 APP_INC += -I$(ESP_IDF_COMP_PATH)/esp_https_server/include
 APP_INC += -I$(ESP_IDF_COMP_PATH)/esp_http_server/include
+APP_INC += -I$(ESP_IDF_COMP_PATH)/esp_http_client/include
+APP_INC += -I$(ESP_IDF_COMP_PATH)/esp_http_client/lib/include
 APP_INC += -I$(ESP_IDF_COMP_PATH)/openssl/include
 APP_INC += -I$(ESP_IDF_COMP_PATH)/nghttp/port/include
+APP_INC += -I$(ESP_IDF_COMP_PATH)/tcp_transport
+APP_INC += -I$(ESP_IDF_COMP_PATH)/esp-tls
+APP_INC += -I$(ESP_IDF_COMP_PATH)/tcp_transport/include
 APP_INC += -I../lib/mp-readline
 APP_INC += -I../lib/netutils
 APP_INC += -I../lib/oofatfs
@@ -317,6 +322,23 @@ BOOT_SRC_C = $(addprefix bootloader/,\
 	
 APP_HTTP_SRC_C = $(addprefix http/,\
 	https_server.c \
+	esp_http_client.c \
+	http_auth.c \
+	http_header.c \
+	http_utils.c \
+	)
+	
+APP_TCP_TRANSPORT_SRC_C = $(addprefix tcp_transport/,\
+	transport_ssl.c \
+	transport_strcasestr.c \
+	transport_tcp.c \
+	transport_utils.c \
+	transport_ws.c \
+	transport.c \
+	)
+	
+APP_ESP_TLS_SRC_C = $(addprefix esp-tls/,\
+	esp_tls.c \
 	)
 
 SFX_OBJ =
@@ -348,7 +370,7 @@ endif # ifeq ($(OPENTHREAD), on)
 OBJ += $(addprefix $(BUILD)/, $(APP_MAIN_SRC_C:.c=.o) $(APP_HAL_SRC_C:.c=.o) $(APP_LIB_SRC_C:.c=.o))
 OBJ += $(addprefix $(BUILD)/, $(APP_MODS_SRC_C:.c=.o) $(APP_STM_SRC_C:.c=.o))
 OBJ += $(addprefix $(BUILD)/, $(APP_FATFS_SRC_C:.c=.o) $(APP_LITTLEFS_SRC_C:.c=.o) $(APP_UTIL_SRC_C:.c=.o) $(APP_TELNET_SRC_C:.c=.o))
-OBJ += $(addprefix $(BUILD)/, $(APP_FTP_SRC_C:.c=.o) $(APP_CAN_SRC_C:.c=.o) $(APP_HTTP_SRC_C:.c=.o))
+OBJ += $(addprefix $(BUILD)/, $(APP_FTP_SRC_C:.c=.o) $(APP_CAN_SRC_C:.c=.o) $(APP_HTTP_SRC_C:.c=.o) $(APP_TCP_TRANSPORT_SRC_C:.c=.o) $(APP_ESP_TLS_SRC_C:.c=.o))
 OBJ += $(BUILD)/pins.o
 
 BOOT_OBJ = $(addprefix $(BUILD)/, $(BOOT_SRC_C:.c=.o))
