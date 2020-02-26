@@ -18,6 +18,7 @@
 
 #include "esp_err.h"
 #include "esp_https_server.h"
+#include "esp_http_client.h"
 #include "modhttp.h"
 #include "pycom_general_util.h"
 
@@ -91,6 +92,8 @@ STATIC const char* mod_http_mediatype[] = {
 // There can only be 1 server instance
 STATIC mod_http_server_obj_t* server_obj = NULL;
 STATIC bool server_initialized = false;
+
+STATIC esp_http_client_handle_t client_obj;
 
 STATIC const mp_obj_type_t mod_http_resource_type;
 
@@ -581,7 +584,7 @@ STATIC mp_obj_t mod_http_server_init(mp_uint_t n_args, const mp_obj_t *pos_args,
     const mp_arg_t mod_http_server_init_args[] = {
             { MP_QSTR_port,                     MP_ARG_INT  | MP_ARG_KW_ONLY, {.u_int = 80}},
 			{ MP_QSTR_keyfile,                  MP_ARG_KW_ONLY  | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-			{ MP_QSTR_certfile,                   MP_ARG_KW_ONLY  | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+			{ MP_QSTR_certfile,                 MP_ARG_KW_ONLY  | MP_ARG_OBJ, {.u_obj = mp_const_none} },
     };
 
     if(server_initialized == false) {
@@ -755,9 +758,6 @@ STATIC const mp_map_elem_t mod_http_server_globals_table[] = {
         { MP_OBJ_NEW_QSTR(MP_QSTR_OCTET),                    MP_OBJ_NEW_SMALL_INT(MOD_HTTP_MEDIA_TYPE_APP_OCTET_ID) },
         { MP_OBJ_NEW_QSTR(MP_QSTR_APP_XML),                  MP_OBJ_NEW_SMALL_INT(MOD_HTTP_MEDIA_TYPE_APP_XML_ID) },
 
-
-
-
 };
 
 STATIC MP_DEFINE_CONST_DICT(mod_http_server_globals, mod_http_server_globals_table);
@@ -765,4 +765,52 @@ STATIC MP_DEFINE_CONST_DICT(mod_http_server_globals, mod_http_server_globals_tab
 const mp_obj_module_t mod_http_server = {
     .base = { &mp_type_module },
     .globals = (mp_obj_dict_t*)&mod_http_server_globals,
+};
+
+/******************************************************************************
+ DEFINE HTTP CLIENT CLASS FUNCTIONS
+ ******************************************************************************/
+
+STATIC mp_obj_t mod_http_client_init(mp_uint_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+
+	const mp_arg_t mod_http_client_init_args[] = {
+	        { MP_QSTR_url,                     MP_ARG_OBJ  | MP_ARG_REQUIRED, },
+
+	};
+
+	mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_client_init_args)];
+	mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_client_init_args, args);
+
+	esp_http_client_config_t config = {};
+
+	printf("URL: %s\n", mp_obj_str_get_str(args[0].u_obj));
+
+	config.url = mp_obj_str_get_str(args[0].u_obj);
+
+	client_obj = esp_http_client_init(&config);
+
+	esp_err_t err = esp_http_client_perform(client_obj);
+
+	if (err == ESP_OK) {
+		printf("status code: %d\n", esp_http_client_get_status_code(client_obj));
+		printf("content length: %d\n", esp_http_client_get_content_length(client_obj));
+	}
+	esp_http_client_cleanup(client_obj);
+	printf("Client created!\n");
+
+    return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_client_init_obj, 0, mod_http_client_init);
+
+STATIC const mp_map_elem_t mod_http_client_globals_table[] = {
+        { MP_OBJ_NEW_QSTR(MP_QSTR___name__),                        MP_OBJ_NEW_QSTR(MP_QSTR_HTTP_Client) },
+		{ MP_OBJ_NEW_QSTR(MP_QSTR_init),                            (mp_obj_t)&mod_http_client_init_obj },
+};
+
+STATIC MP_DEFINE_CONST_DICT(mod_http_client_globals, mod_http_client_globals_table);
+
+const mp_obj_module_t mod_http_client = {
+    .base = { &mp_type_module },
+	.globals = (mp_obj_dict_t*)&mod_http_client_globals,
 };
