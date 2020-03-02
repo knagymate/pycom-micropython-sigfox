@@ -76,6 +76,9 @@ STATIC bool mod_http_server_get_acceptance(const char* accept_field, uint8_t med
 STATIC void mod_http_server_callback_handler(void *arg_in);
 STATIC esp_err_t mod_http_server_callback(httpd_req_t *r);
 
+STATIC void mod_http_client_callback_handler(void *arg_in);
+//STATIC esp_err_t mod_http_client_callback(httpd_req_t *r);
+
 /******************************************************************************
  DEFINE PRIVATE VARIABLES
  ******************************************************************************/
@@ -94,13 +97,15 @@ STATIC mod_http_server_obj_t* server_obj = NULL;
 STATIC bool server_initialized = false;
 
 STATIC esp_http_client_handle_t client_obj;
+STATIC esp_http_client_config_t client_config = {};
+STATIC mp_obj_t client_callback;
 
 STATIC const mp_obj_type_t mod_http_resource_type;
 
 
 
 /******************************************************************************
- DEFINE PRIVATE FUNCTIONS
+ DEFINE PRIVATE SERVER FUNCTIONS
  ******************************************************************************/
 // Get the resource if exists
 STATIC mod_http_resource_obj_t* find_resource(const char* uri) {
@@ -499,6 +504,69 @@ STATIC esp_err_t mod_http_server_callback(httpd_req_t *r){
     return ESP_OK;
 }
 
+/******************************************************************************
+ DEFINE PRIVATE CLIENT FUNCTIONS
+ ******************************************************************************/
+
+esp_err_t _http_event_handle(esp_http_client_event_t *evt)
+{
+    switch(evt->event_id) {
+		case HTTP_EVENT_ERROR:
+			//ESP_LOGI(TAG, "HTTP_EVENT_ERROR");
+			break;
+		case HTTP_EVENT_ON_CONNECTED:
+			//ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
+			break;
+		case HTTP_EVENT_HEADER_SENT:
+			//ESP_LOGI(TAG, "HTTP_EVENT_HEADER_SENT");
+			break;
+        case HTTP_EVENT_ON_HEADER:
+            //ESP_LOGI(TAG, "HTTP_EVENT_ON_HEADER");
+        	//printf("Event: HTTP_EVENT_ON_HEADER\n");
+        	//printf("Status code: %d\n", esp_http_client_get_status_code(client_obj));
+            //printf("Data: %.*s\n", evt->data_len, (char*)evt->data);
+            break;
+        case HTTP_EVENT_ON_DATA:
+            //ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
+            if (!esp_http_client_is_chunked_response(evt->client)) {
+            	// The MicroPython callback is stored in user_ctx
+            	mp_obj_t args[3];
+            	args[0] = client_callback;
+            	args[1] = mp_obj_new_int(esp_http_client_get_status_code(client_obj));
+            	args[2] = mp_obj_new_str((char*)evt->data, evt->data_len);
+
+            	// The user registered MicroPython callback will be called decoupled from the HTTP Server context in the IRQ Task
+            	mp_irq_queue_interrupt(mod_http_client_callback_handler, (void *)mp_obj_new_tuple(3, args));
+            }
+            break;
+		case HTTP_EVENT_ON_FINISH:
+			//ESP_LOGI(TAG, "HTTP_EVENT_ON_FINISH");
+			break;
+		case HTTP_EVENT_DISCONNECTED:
+			//ESP_LOGI(TAG, "HTTP_EVENT_DISCONNECTED");
+			break;
+    }
+    return ESP_OK;
+}
+
+STATIC void mod_http_client_callback_handler(void *arg_in) {
+
+    /* The received arg_in is a tuple with 4 elements
+     * 0 - user's MicroPython callback
+     * 1 - Status code as int
+     * 2 - Data as string
+     */
+
+    mp_obj_t args[2];
+    // Status Code
+    args[0] = ((mp_obj_tuple_t*)arg_in)->items[1];
+    // Data
+    args[1] = ((mp_obj_tuple_t*)arg_in)->items[2];
+
+    // Call the user registered MicroPython function
+    mp_call_function_n_kw(((mp_obj_tuple_t*)arg_in)->items[0], 2, 0, args);
+
+}
 
 /******************************************************************************
  DEFINE HTTP RESOURCE CLASS FUNCTIONS
@@ -775,37 +843,90 @@ STATIC mp_obj_t mod_http_client_init(mp_uint_t n_args, const mp_obj_t *pos_args,
 
 	const mp_arg_t mod_http_client_init_args[] = {
 	        { MP_QSTR_url,                     MP_ARG_OBJ  | MP_ARG_REQUIRED, },
-
+			{ MP_QSTR_method,                  MP_ARG_INT  | MP_ARG_KW_ONLY, {.u_int = MOD_HTTP_GET}},
 	};
 
 	mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_client_init_args)];
 	mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_client_init_args, args);
 
-	esp_http_client_config_t config = {};
+	// Init client object
+	char* url = mp_obj_str_get_str(args[0].u_obj);
 
-	printf("URL: %s\n", mp_obj_str_get_str(args[0].u_obj));
+    // URL must start with "http://" or "https://" and have at least one more character except "/", otherwise it crash
+    if(strlen(url) > 7 && strncmp("http://", url, 7) == 0 && url[7] != '/') {
+    	//HTTP over TCP
+    	client_config.url = url;
+    	client_config.transport_type = HTTP_TRANSPORT_OVER_TCP;
+    }
+    else if(strlen(url) > 8 && strncmp("https://", url, 8) == 0 && url[8] != '/') {
+    	//HTTP over SSL
+    	client_config.url = url;
+    	client_config.transport_type = HTTP_TRANSPORT_OVER_SSL;
+    }
+    else {
+    	nlr_raise(mp_obj_new_exception_msg(&mp_type_RuntimeError, "URL must start with \"http://\" or \"https://\""));
+    }
 
-	config.url = mp_obj_str_get_str(args[0].u_obj);
+    // Client object is initiated
+    client_obj = esp_http_client_init(&client_config);
 
-	client_obj = esp_http_client_init(&config);
-
-	esp_err_t err = esp_http_client_perform(client_obj);
-
-	if (err == ESP_OK) {
-		printf("status code: %d\n", esp_http_client_get_status_code(client_obj));
-		printf("content length: %d\n", esp_http_client_get_content_length(client_obj));
-	}
-	esp_http_client_cleanup(client_obj);
-	printf("Client created!\n");
+    // Set client's method
+    if(args[2].u_int==MOD_HTTP_GET) {
+    	esp_http_client_set_method(client_obj, HTTP_METHOD_GET);
+    }
+    if(args[2].u_int==MOD_HTTP_POST) {
+    	esp_http_client_set_method(client_obj, HTTP_METHOD_POST);
+    }
+    if(args[2].u_int==MOD_HTTP_PUT) {
+    	esp_http_client_set_method(client_obj, HTTP_METHOD_PUT);
+    }
+    if(args[2].u_int==MOD_HTTP_DELETE) {
+    	esp_http_client_set_method(client_obj, HTTP_METHOD_DELETE);
+    }
 
     return mp_const_none;
 }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_client_init_obj, 0, mod_http_client_init);
 
+// Sets or removes the callback on a given method
+STATIC mp_obj_t mod_http_client_callback(mp_uint_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+
+    const mp_arg_t mod_http_client_callback_args[] = {
+            { MP_QSTR_callback,                MP_ARG_OBJ  | MP_ARG_REQUIRED, {.u_obj = MP_OBJ_NULL}},
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(mod_http_client_callback_args)];
+    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(args), mod_http_client_callback_args, args);
+
+    client_callback = args[0].u_obj;
+    client_config.event_handler = _http_event_handle;
+    client_obj = esp_http_client_init(&client_config);
+    return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_client_callback_obj, 1, mod_http_client_callback);
+
+STATIC mp_obj_t mod_http_client_perform(void) {
+	esp_err_t err = esp_http_client_perform(client_obj);
+
+	if (err != ESP_OK) {
+		nlr_raise(mp_obj_new_exception_msg(&mp_type_RuntimeError, "Could not perform the client"));
+	}
+	//esp_http_client_cleanup(client_obj);
+
+    return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mod_http_client_perform_obj, mod_http_client_perform);
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mod_http_client_set_url_obj, 0, mod_http_client_set_url);
+
 STATIC const mp_map_elem_t mod_http_client_globals_table[] = {
         { MP_OBJ_NEW_QSTR(MP_QSTR___name__),                        MP_OBJ_NEW_QSTR(MP_QSTR_HTTP_Client) },
 		{ MP_OBJ_NEW_QSTR(MP_QSTR_init),                            (mp_obj_t)&mod_http_client_init_obj },
+		{ MP_OBJ_NEW_QSTR(MP_QSTR_callback),                        (mp_obj_t)&mod_http_client_callback_obj },
+		{ MP_OBJ_NEW_QSTR(MP_QSTR_perform),                         (mp_obj_t)&mod_http_client_perform_obj },
+		{ MP_OBJ_NEW_QSTR(MP_QSTR_set_url),                         (mp_obj_t)&mod_http_client_set_url_obj },
 };
 
 STATIC MP_DEFINE_CONST_DICT(mod_http_client_globals, mod_http_client_globals_table);
